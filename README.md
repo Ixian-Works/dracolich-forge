@@ -253,7 +253,7 @@ void d20_deterministic_roll() {
 ## Building from Source
 
 ```bash
-git clone https://github.com/laasilva/dracolich-forge.git
+git clone https://github.com/Ixian-Works/dracolich-forge.git
 cd dracolich-forge
 mvn clean install
 ```
@@ -513,6 +513,6 @@ forge/
 
 ---
 
-Part of the [Dracolich](https://github.com/laasilva?tab=repositories&q=dracolich) platform. For the
+Part of the [Dracolich](https://github.com/orgs/Ixian-Works/repositories?q=dracolich) platform. For the
 cross-repo picture — service topology, release pipeline, shared conventions — see the workspace guide
 at `~/Dev/Dracolich/CLAUDE.md`.
