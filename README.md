@@ -296,7 +296,20 @@ throw new ResponseException(
 
 - **`ErrorCode`** — interface with `getCode()` and `getMessage()`. Each service implements its own enum.
 - **`ApiError`** — wraps an `ErrorCode` with optional `severity` and `field`.
-- **`ControllerAdvice`** — catches `ResponseException` and returns `ResponseEntity<DmdResponse<?>>`.
+- **`ControllerAdvice`** — turns every failure into `ResponseEntity<DmdResponse<?>>`:
+
+| What failed | Status | Errors |
+|---|---|---|
+| A `ResponseException` thrown by a service | the one it carries | the ones it carries |
+| forge's `ValidationException` | 400 | one per error code |
+| A request body that fails validation (`WebExchangeBindException`) | 400 | `DMD043` once per rejected field, with `field` set |
+| A parameter that is missing or can't be converted, such as `?format=NOPE` | 400 | `DMD043`, with `field` set to the parameter's name |
+| A body that can't be read, such as malformed JSON | 400 | `DMD043` |
+| The wrong method or content type, and any other `ResponseStatusException` below 500 | the one Spring chose (405, 415, …), with its headers | `DMD043` |
+| Anything else, including a `ResponseStatusException` of 500 or above | 500, or the status it carries | `DMD001`, and a message that says nothing of the cause |
+
+`DMD043` means the caller sent something the service could not take. `DMD001` means the service
+failed. An alert on 5xx should never fire on the first.
 
 ### Security
 
