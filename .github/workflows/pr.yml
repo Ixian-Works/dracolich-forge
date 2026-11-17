@@ -1,0 +1,25 @@
+name: PR Validation
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  # Named "test" to match the required status check in the service repos' ruleset.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: '25'
+          distribution: 'temurin'
+
+      # forge depends on nothing from GitHub Packages, so it needs no settings file.
+      - name: Run tests
+        run: mvn -B test --file pom.xml -Drevision=0.0.0-PR
