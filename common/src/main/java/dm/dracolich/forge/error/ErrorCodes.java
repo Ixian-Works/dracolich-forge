@@ -14,7 +14,9 @@ public enum ErrorCodes implements ErrorCode {
     DMD008("DMD008", "Total {%s} count must be {%s}."),
     DMD009("DMD009", "{%s} [%s]={%s} not found."),
     DMD010("DMD010", "Failed to upload image to Cloudinary: %s"),
-    DMD011("DMD011", "Failed to delete image from Cloudinary: %s");
+    DMD011("DMD011", "Failed to delete image from Cloudinary: %s"),
+    // DMD012 to DMD042 belong to the services. The sequence is shared, so this is not DMD012.
+    DMD043("DMD043", "Invalid request: %s");
 
     private final String code;
     private final String message;
