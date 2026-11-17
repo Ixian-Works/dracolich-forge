@@ -493,7 +493,7 @@ credentials) to resolve it. Pin the version in a property so it is bumped in one
 ```
 
 Use 8.1.3 or later: it answers 401 to an invalid or expired bearer token instead of treating the caller
-as anonymous, and 400 to a malformed request instead of 500.
+as anonymous, and 400 to a malformed request instead of 500. Versions up to 8.1.2 do neither.
 
 Note the major version moves fast: CI bumps **major** on any commit whose subject starts with
 `feature`, so 8.x reflects the number of feature commits, not breaking-change intent.
