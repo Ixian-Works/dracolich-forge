@@ -1,11 +1,13 @@
 package dm.dracolich.forge.security;
 
-import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jwts;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.server.reactive.ServerHttpRequest;
+import org.springframework.mock.http.server.reactive.MockServerHttpRequest;
+import org.springframework.mock.web.server.MockServerWebExchange;
 import org.springframework.security.core.context.ReactiveSecurityContextHolder;
 import org.springframework.security.core.context.SecurityContext;
 import org.springframework.web.server.ServerWebExchange;
@@ -20,6 +22,7 @@ import java.security.interfaces.ECPublicKey;
 import java.security.spec.ECGenParameterSpec;
 import java.time.Instant;
 import java.util.Date;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -40,15 +43,17 @@ class JwtAuthenticationWebFilterTest {
         privateKey = (ECPrivateKey) keyPair.getPrivate();
         publicKey = (ECPublicKey) keyPair.getPublic();
 
-        JwtTokenValidator validator = token -> Mono.fromCallable(() ->
+        filter = new JwtAuthenticationWebFilter(filterValidator());
+    }
+
+    private JwtTokenValidator filterValidator() {
+        return token -> Mono.fromCallable(() ->
                 Jwts.parser()
                         .verifyWith(publicKey)
                         .build()
                         .parseSignedClaims(token)
                         .getPayload()
         );
-
-        filter = new JwtAuthenticationWebFilter(validator);
     }
 
     private String generateToken(String subject, String accessLevel) {
@@ -130,24 +135,45 @@ class JwtAuthenticationWebFilterTest {
         assertTrue(chainCalled.get());
     }
 
-    @Test
-    void invalidToken_passesThrough() {
-        ServerWebExchange exchange = mockExchange("Bearer invalid.jwt.token");
+    private static MockServerWebExchange realExchange(String authHeaderValue) {
+        var request = MockServerHttpRequest.post("/decks/");
+        if (authHeaderValue != null) {
+            request.header(HttpHeaders.AUTHORIZATION, authHeaderValue);
+        }
+        return MockServerWebExchange.from(request);
+    }
 
-        AtomicReference<Boolean> chainCalled = new AtomicReference<>(false);
-        WebFilterChain chain = ex -> {
-            chainCalled.set(true);
+    private static void assertRejectedAsInvalidToken(MockServerWebExchange exchange, AtomicInteger chainCalls) {
+        assertEquals(0, chainCalls.get(), "a request with a bad token must not reach the handler");
+        assertEquals(HttpStatus.UNAUTHORIZED, exchange.getResponse().getStatusCode());
+        assertEquals("Bearer error=\"invalid_token\"",
+                exchange.getResponse().getHeaders().getFirst(HttpHeaders.WWW_AUTHENTICATE));
+        String body = exchange.getResponse().getBodyAsString().block();
+        assertNotNull(body);
+        assertTrue(body.contains("\"success\":false"), body);
+        assertTrue(body.contains("\"httpStatus\":\"UNAUTHORIZED\""), body);
+    }
+
+    private static WebFilterChain countingChain(AtomicInteger calls) {
+        return ex -> {
+            calls.incrementAndGet();
             return Mono.empty();
         };
-
-        StepVerifier.create(filter.filter(exchange, chain))
-                .verifyComplete();
-
-        assertTrue(chainCalled.get());
     }
 
     @Test
-    void expiredToken_passesThrough() {
+    void invalidToken_isRejectedWith401() {
+        MockServerWebExchange exchange = realExchange("Bearer invalid.jwt.token");
+        AtomicInteger chainCalls = new AtomicInteger();
+
+        StepVerifier.create(filter.filter(exchange, countingChain(chainCalls)))
+                .verifyComplete();
+
+        assertRejectedAsInvalidToken(exchange, chainCalls);
+    }
+
+    @Test
+    void expiredToken_isRejectedWith401() {
         Instant past = Instant.now().minusSeconds(3600);
         String expiredToken = Jwts.builder()
                 .subject("user-123")
@@ -156,19 +182,103 @@ class JwtAuthenticationWebFilterTest {
                 .expiration(Date.from(past))
                 .signWith(privateKey, Jwts.SIG.ES384)
                 .compact();
+        MockServerWebExchange exchange = realExchange("Bearer " + expiredToken);
+        AtomicInteger chainCalls = new AtomicInteger();
 
-        ServerWebExchange exchange = mockExchange("Bearer " + expiredToken);
-
-        AtomicReference<Boolean> chainCalled = new AtomicReference<>(false);
-        WebFilterChain chain = ex -> {
-            chainCalled.set(true);
-            return Mono.empty();
-        };
-
-        StepVerifier.create(filter.filter(exchange, chain))
+        StepVerifier.create(filter.filter(exchange, countingChain(chainCalls)))
                 .verifyComplete();
 
-        assertTrue(chainCalled.get());
+        assertRejectedAsInvalidToken(exchange, chainCalls);
+    }
+
+    @Test
+    void validatorReturningNothing_isRejectedWith401() {
+        JwtAuthenticationWebFilter emptyValidatorFilter = new JwtAuthenticationWebFilter(token -> Mono.empty());
+        MockServerWebExchange exchange = realExchange("Bearer some.token.here");
+        AtomicInteger chainCalls = new AtomicInteger();
+
+        StepVerifier.create(emptyValidatorFilter.filter(exchange, countingChain(chainCalls)))
+                .verifyComplete();
+
+        assertRejectedAsInvalidToken(exchange, chainCalls);
+    }
+
+    @Test
+    void tokenWithoutSubject_isRejectedWith401() {
+        Instant now = Instant.now();
+        String noSubject = Jwts.builder()
+                .issuedAt(Date.from(now))
+                .expiration(Date.from(now.plusSeconds(900)))
+                .signWith(privateKey, Jwts.SIG.ES384)
+                .compact();
+        MockServerWebExchange exchange = realExchange("Bearer " + noSubject);
+        AtomicInteger chainCalls = new AtomicInteger();
+
+        StepVerifier.create(filter.filter(exchange, countingChain(chainCalls)))
+                .verifyComplete();
+
+        assertRejectedAsInvalidToken(exchange, chainCalls);
+    }
+
+    @Test
+    void downstreamError_reachesTheCallerOnce_andTheHandlerRunsOnce() {
+        String token = generateToken("user-123", "COMMON_USER");
+        MockServerWebExchange exchange = realExchange("Bearer " + token);
+        AtomicInteger chainCalls = new AtomicInteger();
+        IllegalStateException failure = new IllegalStateException("handler failed after writing");
+
+        WebFilterChain failingChain = ex -> {
+            chainCalls.incrementAndGet();
+            return Mono.error(failure);
+        };
+
+        StepVerifier.create(filter.filter(exchange, failingChain))
+                .expectErrorMatches(e -> e == failure)
+                .verify();
+
+        assertEquals(1, chainCalls.get(), "the handler must run exactly once");
+        assertNull(exchange.getResponse().getStatusCode(), "a handler error is not an authentication failure");
+    }
+
+    @Test
+    void badTokenOnAnIgnoredRequest_passesThroughWithoutAPrincipal() {
+        JwtAuthenticationWebFilter ignoringFilter = new JwtAuthenticationWebFilter(
+                filterValidator(),
+                ex -> ex.getRequest().getPath().value().startsWith("/auth/"));
+        MockServerWebExchange exchange = MockServerWebExchange.from(
+                MockServerHttpRequest.post("/auth/login")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer invalid.jwt.token"));
+        AtomicInteger chainCalls = new AtomicInteger();
+        AtomicReference<Boolean> hadContext = new AtomicReference<>();
+
+        WebFilterChain chain = ex -> {
+            chainCalls.incrementAndGet();
+            return ReactiveSecurityContextHolder.getContext()
+                    .hasElement()
+                    .doOnNext(hadContext::set)
+                    .then();
+        };
+
+        StepVerifier.create(ignoringFilter.filter(exchange, chain))
+                .verifyComplete();
+
+        assertEquals(1, chainCalls.get());
+        assertFalse(hadContext.get(), "an ignored token must not authenticate the request");
+        assertNull(exchange.getResponse().getStatusCode());
+    }
+
+    @Test
+    void badTokenOnARequestThatIsNotIgnored_isStillRejected() {
+        JwtAuthenticationWebFilter ignoringFilter = new JwtAuthenticationWebFilter(
+                filterValidator(),
+                ex -> ex.getRequest().getPath().value().startsWith("/auth/"));
+        MockServerWebExchange exchange = realExchange("Bearer invalid.jwt.token");
+        AtomicInteger chainCalls = new AtomicInteger();
+
+        StepVerifier.create(ignoringFilter.filter(exchange, countingChain(chainCalls)))
+                .verifyComplete();
+
+        assertRejectedAsInvalidToken(exchange, chainCalls);
     }
 
     @Test

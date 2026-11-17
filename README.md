@@ -352,7 +352,16 @@ public JwtAuthenticationWebFilter jwtFilter(JwtTokenValidator validator) {
 }
 ```
 
-- On failure (missing/invalid/expired token): passes through silently, logs WARN. Downstream filters or `authorizeExchange(...authenticated())` enforce the 401.
+- No `Authorization` header, or a scheme other than `Bearer`: the request passes through with no principal, so `AnonCookieFilter` can identify it.
+- A `Bearer` token that is invalid, expired or has no subject: the filter answers **401** with `WWW-Authenticate: Bearer error="invalid_token"` and a `DmdResponse` body, and logs a WARN. It never downgrades the caller to anonymous, so a client with an expired token refreshes and retries instead of acting as a visitor.
+- Endpoints that must work with a stale token, such as login and token refresh, are listed with the second constructor argument. The token is ignored on those requests, as if no header had been sent:
+
+  ```java
+  new JwtAuthenticationWebFilter(validator,
+          exchange -> exchange.getRequest().getPath().pathWithinApplication().value().startsWith("/auth/"));
+  ```
+
+- Only validation is guarded. An error from the rest of the chain reaches the caller unchanged, and the handler runs once.
 - Filter order: `10`.
 
 For verifier-only services (everyone except `dracolich-user-api`), use the bundled `EcPublicKeyJwtValidator` — no need to write your own implementation:
